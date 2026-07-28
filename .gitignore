@@ -1,0 +1,24 @@
+# Generated data (never commit real or sample exports)
+exports/
+sample-data/
+*.zip
+
+# Secrets & local config
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+local.settings.json
+secrets/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.vs/
+*.user
+
+# Logs / temp
+*.log
+*.tmp
