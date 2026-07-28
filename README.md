@@ -89,6 +89,13 @@ the agent to the tenant.
 It trades freshness for containment: snapshots are as current as the last run, not live.
 That trade is the whole point. See *What this isn't*.
 
+**One honest exception.** The read-only guarantee covers the **collection → agent** path:
+the collectors only read, and the agent has no tenant access at all. The repo also ships one
+*optional, human-run* enrichment utility in [`tools/`](./tools) that can write to the tenant
+(it records device warranty into Notes). It's fenced off from the collection layer, opt-in,
+and defaults to a read-only report — but it's a write, and this project names it rather than
+hides it.
+
 ## What's in this repo (roadmap)
 
 This repo documents the pattern and ships the reusable pieces one at a time, each with a
@@ -147,6 +154,15 @@ Microsoft, Microsoft 365, Intune, Entra, Microsoft Graph, Azure, and Power BI ar
 trademarks of the Microsoft group of companies. This is independent content and is not
 affiliated with, sponsored by, or endorsed by Microsoft. Any example that touches a
 `/beta` Graph endpoint is marked as such; beta endpoints can change without notice.
+
+## Credits
+
+This project builds on work by the endpoint-management community — see
+[CREDITS.md](./CREDITS.md). Notably, the Intune documentation collector uses the
+[M365Documentation](https://github.com/ThomasKur/M365Documentation) module by Thomas Kurth
+(GPL-3.0; installed separately, not vendored here), and the Automation → Blob CSV → Power BI
+reporting approach follows well-established community prior art
+([SMSAgent / Trevor Jones](https://smsagent.blog)).
 
 ## License
 
