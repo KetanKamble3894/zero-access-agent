@@ -1,0 +1,13 @@
+// AVD connection-failure detector — for a Log Analytics scheduled alert rule.
+// Fires on the two errors that mean sessions are being blocked:
+//   ERROR_SHARING_VIOLATION              (profile/file sharing contention, e.g. FSLogix)
+//   ConnectionFailedNoHealthyRdshAvailable (no healthy session host to place the user)
+// Alert condition: table rows > 0 (raise to de-noise)  ·  Severity: Critical  ·  Action group: email the AVD admins.
+// Read-only: it queries WVDErrors; it changes nothing.
+WVDErrors
+| where CodeSymbolic contains "ERROR_SHARING_VIOLATION"
+    or Message contains "ERROR_SHARING_VIOLATION"          // Win32 code 32 can land in Message, not CodeSymbolic
+    or CodeSymbolic contains "ConnectionFailedNoHealthyRdshAvailable"
+| extend MachineName  = extract("'(.*?)'", 1, Message)             // machine name from the message text
+| extend HostPoolName = extract("hostpools/(.*)", 1, _ResourceId)  // host pool from the resource id
+| project TimeGenerated, HostPoolName, MachineName, UserName, CodeSymbolic

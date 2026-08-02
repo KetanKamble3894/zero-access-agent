@@ -26,7 +26,7 @@
 
 .NOTES
     SCOPES:
-      Report-only mode : DeviceManagementManagedDevices.Read.All  + Storage Blob Data Contributor
+      Report-only mode : DeviceManagementManagedDevices.Read.All   (Microsoft Graph only - no Azure storage)
       Update mode      : DeviceManagementManagedDevices.ReadWrite.All  (the ONLY place this
                          project uses a write scope — grant it only if you run update mode)
 
@@ -45,24 +45,15 @@
 
 # ===========================================================================
 #  CONFIGURE ME  ->  set these to your own values, then run.
-#  These three lines are the only thing you MUST change.
 # ===========================================================================
-$ResourceGroup  = "<your-resource-group-name>"     # resource group that holds your storage account
-$StorageAccount = "<your-storage-account-name>"    # storage account name (lowercase, globally unique)
-$Container      = "<your-container-name>"           # blob container, e.g. "intune-report"
-
-# -- mode + optional settings ----------------------------------------------
 $ReportOnly     = $true                                   # $true = READ-ONLY report. $false = WRITE warranty into device Notes (needs ReadWrite scope)
 $BatchSize      = 25                                      # progress-log interval
-$OutputFileName = "LenovoWarrantyReport_IntuneNotes.csv"  # CSV name written to the container
+$OutputFileName = "LenovoWarrantyReport_IntuneNotes.csv"  # local CSV report name
+$ExportLocation = "$env:TEMP"                             # where the local CSV report is written
 # ===========================================================================
-
-# Safety net - stop if the placeholders above weren't replaced.
-if ("$ResourceGroup $StorageAccount $Container" -match '<your-') {
-    throw "Please set ResourceGroup, StorageAccount, and Container at the top of the script before running."
-}
-
-$ExportLocation = "$env:TEMP"
+# This tool is pure Microsoft Graph — it needs NO Azure storage. Report mode
+# writes a local CSV you inspect; update mode PATCHes device Notes. Warranty
+# reaches Power BI later via the inventory collector reading the Notes field.
 
 # Enhanced logging with mode awareness
 $LogTime = { Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
@@ -93,7 +84,7 @@ Write-Log "Using individual device queries with `$select to avoid API inconsiste
 function Get-DeviceWithAccurateNotes {
     param([string]$DeviceId)
 
-    $uri = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/$DeviceId`?`$select=id,deviceName,serialNumber,notes"
+    $uri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$DeviceId`?`$select=id,deviceName,serialNumber,notes"
 
     try {
         $device = Invoke-RestMethod -Uri $uri -Headers $script:Headers -Method GET -TimeoutSec 30
@@ -257,10 +248,15 @@ Function Invoke-MyGraphGetRequest {
     return $AllResults
 }
 
-# Fetch Lenovo Windows device IDs only (avoids a known list-vs-detail notes inconsistency)
-Write-Log "Fetching Lenovo Windows device IDs from Intune" "INFO"
-$Devices_URL = "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=contains(operatingSystem,'Windows') and manufacturer eq 'lenovo'&`$select=id"
-$Lenovo_DeviceIds = Invoke-MyGraphGetRequest -URL $Devices_URL
+# Fetch managed-device IDs with manufacturer + OS, then filter CLIENT-SIDE to Lenovo Windows.
+# Server-side $filter on managedDevices manufacturer/operatingSystem is undocumented and unreliable:
+# it can silently return the WHOLE fleet, or match nothing on a case mismatch ('lenovo' vs 'LENOVO').
+# Filtering in code is safe and case-insensitive — this matters because update mode PATCHes Notes,
+# so we must never process a non-Lenovo device.
+Write-Log "Fetching managed devices; filtering to Lenovo Windows client-side" "INFO"
+$Devices_URL = "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$select=id,manufacturer,operatingSystem"
+$AllDevices  = Invoke-MyGraphGetRequest -URL $Devices_URL
+$Lenovo_DeviceIds = @($AllDevices | Where-Object { $_.manufacturer -match 'lenovo' -and $_.operatingSystem -match 'Windows' })
 
 if ($Lenovo_DeviceIds.Count -eq 0) {
     Write-Log "No Lenovo Windows devices found - exiting" "WARN"
@@ -376,16 +372,5 @@ if (!(Test-Path $ExportLocation)) { New-Item $ExportLocation -ItemType Directory
 $Results | Export-Csv -Path $OutputFilePath -NoTypeInformation
 Write-Log "CSV exported: $OutputFilePath ($($Results.Count) records)" "INFO"
 
-# Upload to Azure Blob
-Write-Log "Uploading to Azure Blob Storage" "INFO"
-try {
-    $storageContext = (Get-AzStorageAccount -ResourceGroupName $ResourceGroup -Name $StorageAccount).Context
-    Set-AzStorageBlobContent -File $OutputFilePath -Container $Container -Blob (Split-Path -Leaf $OutputFilePath) -Context $storageContext -Force
-    Write-Log "Azure Blob upload successful" "INFO"
-    Remove-Item -Path $OutputFilePath -Force
-} catch {
-    Write-Log "Azure Blob upload failed: $_" "WARN"
-    Write-Log "CSV file remains at: $OutputFilePath" "INFO"
-}
-
+Write-Log "Report written locally (no Azure storage used): $OutputFilePath" "INFO"
 Write-Log "Script execution completed in $mode MODE" "INFO"
