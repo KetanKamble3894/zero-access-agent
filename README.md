@@ -1,113 +1,87 @@
 # Zero-Access Agent
 
-**Read-only endpoint intelligence for Microsoft Intune — by construction.**
+**An AI agent that answers questions about your whole Microsoft endpoint fleet in plain English — while holding zero access to any live system.**
 
-A set of scheduled, read-only collectors that snapshot your Intune / Microsoft Graph / Entra data,
-enrich it, and drop it into Blob storage for Power BI and a natural-language AI agent — with **no write
-access to your tenant anywhere in the chain**. The read-only guarantee isn't a policy you trust; it's the
-shape of the system: no collector holds a write scope, so none *can* change anything.
+> "How many devices fail Firewall in Finland?" · "Which Lenovos are out of warranty?" · "Is Ollama installed anywhere, and is it approved?"
+>
+> The agent answers all of it — and holds **no Graph scope, no key, and no connection to Intune, Entra or any live tenant.** Its entire world is two read-only search indexes built from sanitized, dated snapshots.
 
-There is exactly **one** deliberate exception, fenced off in `tools/` and opt-in — see
-[The one that writes](#the-one-that-writes) below.
-
-> Everything here runs against a **personal lab tenant**. All sample data is synthetic (`@contoso.com`).
-> Independent content — not affiliated with, sponsored by, or endorsed by Microsoft.
+Full write-up (the *why*, the architecture, and the honest trade-offs): **[The read-only AI agent that can't touch your tenant](https://ketankamble.com/blog/the-read-only-ai-agent-that-cant-touch-your-tenant/)** · more at **[ketankamble.com](https://ketankamble.com/)**.
 
 ---
 
-## How it works
+## The idea — the Zero-Access Pattern
 
-```
- Intune / Graph / Entra ──(read-only GET)──▶  Collector runbook  ──▶  Blob (CSV)  ──▶  Power BI
-     (your tenant)          Managed Identity   (Azure Automation)      + agent-data      + AI agent
-```
+Most "chat with your Intune data" builds hand an AI live access to Microsoft Graph and trust it not to misuse it. This one removes the trust from the equation by **separating reading the estate from answering about it**:
 
-- **Auth:** each script runs as an Azure Automation **system-assigned Managed Identity** — no secrets,
-  no app registrations to rotate. The Graph token is requested from the Automation identity endpoint;
-  Blob upload uses `Connect-AzAccount -Identity` + `New-AzStorageContext -UseConnectedAccount`.
-- **Read-only by construction:** the identity is granted only `*.Read.All` Graph app roles, so the
-  collectors physically cannot write. The only write is a CSV to *your own* Blob container.
-- **Reproduce with no tenant:** `scripts/New-SyntheticFleet.ps1` generates a realistic fake fleet so you
-  can build every report against synthetic data first.
+1. **Collect** — scheduled, read-only collectors run as Azure Automation runbooks under a **Managed Identity holding only `*.Read.All` Graph scopes** — no write or action permission of any kind. Each writes a **sanitized CSV snapshot** plus a `_Stats` file with counts already computed.
+2. **Store** — snapshots land in Azure Blob: full files feed Power BI; slim copies feed the agent.
+3. **Index** — two Azure AI Search indexes: `fleet-structured` (one document per report row) and `fleet-docs` (vector-embedded configuration documentation).
+4. **Answer** — a Foundry (Azure AI Foundry) agent whose **only tool is Azure AI Search**. No Graph connector, no code interpreter, no way to call out.
+5. **Ask** — you ask in plain English; the agent searches, grounds its answer in the retrieved rows, and names the report the fact came from.
 
-## Repo layout
+The containment is **structural**: there is no tool that can act, so nothing the agent is told to do can reach the tenant. Worst case, it reads a dated snapshot you could already export from Power BI.
 
-```
-scripts/   read-only collectors, the reclaim/straggler reports, the AVD alert KQL, the synthetic fleet
-tools/     the single opt-in utility that can WRITE (Lenovo warranty → device Notes)
-```
+> The architecture diagram and a full walkthrough are in the [capstone post](https://ketankamble.com/blog/the-read-only-ai-agent-that-cant-touch-your-tenant/).
 
-## The collectors (`scripts/`)
+---
 
-| Script | What it produces | Story |
-|---|---|---|
-| `Collect-InventoryAllDevices.ps1` | One enriched row per device: device + Entra location + OEM warranty + Defender health | One row per device |
-| `Collect-DeviceInventory.ps1` | The reference/base device-inventory collector (the pattern's starting point) | — |
-| `Collect-NonCompliantDevices.ps1` | The **setting** that actually failed (not just "non-compliant") → Power BI | Which setting actually failed? |
-| `Collect-PolicyAssignments.ps1` | Every policy mapped to every target group — dynamic rules + broken targets | Every policy, every target |
-| `Collect-DeviceHygiene.ps1` | Stale / orphaned / inactive devices with a recommended action + owner team | The devices no one owns anymore |
-| `Collect-AppDeploymentFailures.ps1` | App-install failures rolled up per app, with a failure rate + triage category | Which app is failing, and why |
-| `Collect-AutopilotOperations.ps1` | Autopilot / ESP failures classified by phase + category, per deployment | Where Autopilot actually breaks |
-| `Collect-LicenseComplianceCheck.ps1` | Corporate Windows devices whose user is missing the Intune / Win Enterprise licence, + manager & dept | Who's missing an Intune license |
-| `Collect-Windows11Readiness.ps1` | The exact Windows 11 blocker per device — TPM, CPU, Secure Boot, RAM | Which devices can't take Windows 11 |
-| `Collect-LocalAIAgentInventory.ps1` | A read-only inventory of local AI tools (Ollama, LM Studio, …); flags leavers who kept them | Who's running Ollama on your fleet? |
-| `Collect-IntuneDocumentation.ps1` | A read-only snapshot of the whole Intune / Windows 365 config (community M365Documentation module) | Documentation that writes itself |
-| `Report-TeamsPhoneLicenses.ps1` | A tiered Teams Phone licence reclaim report, joined to each user's manager | Teams Phone licenses, paid for and never used |
-| `Report-UnrenamedDevices.ps1` | Windows devices still on the default `DESKTOP-` name, emailed to the team | The devices that never got renamed |
-| `WVD-ConnectionFailure.kql` | A Log Analytics scheduled-alert query that catches AVD session failures before the tickets | When AVD won't connect |
-| `New-SyntheticFleet.ps1` | Generates a fake-but-realistic endpoint fleet as CSVs — reproduce the reports with no real tenant | — |
+## The read-only guarantee
 
-## The one that writes (`tools/`)
+The "it only reads" claim is enforced, not asserted:
 
-`tools/Enrich-LenovoWarrantyToNotes.ps1` is the **only** script that can write to the tenant, and it's
-built to be paranoid about it:
+- The collectors' Managed Identity is granted **only `.Read.All` application scopes**. It cannot write to the tenant.
+- **`read-only-gate.ps1`** runs *as* the identity, asks Graph which application permissions it actually holds, and **refuses to run if any of them can write.** Dot-source it at the top of every runbook:
 
-- **Report-only by default** (`-ReportOnly $true`): looks up Lenovo warranty by serial and writes a CSV
-  **locally** — pure Microsoft Graph, **no Azure storage**, touches nothing in Intune.
-- **Update mode** (`-ReportOnly $false`): additionally `PATCH`es warranty into each device's **Notes**
-  with a **surgical append** that never overwrites existing content. This is the single place a
-  `DeviceManagementManagedDevices.ReadWrite.All` scope appears — grant it **only** if you run update
-  mode. Be aware that scope is broad (it also permits wipe/retire/delete), which is exactly why this tool
-  is fenced off here and defaults to read-only.
+  ```powershell
+  . .\read-only-gate.ps1     # throws if the identity can write — the collector never runs
+  # ...collector logic only reaches here on a clean, read-only identity...
+  ```
 
-## Permissions (Graph app roles on the Managed Identity)
+- The agent connects to Azure AI Search with a **query key, never an admin key**, and personal fields are minimised **at the collector** before they ever reach an index — the system prompt is a behavioural layer on top, not the only control.
 
-Grant only what a given script needs; all are **read** roles except the one noted.
+> **One honest exception.** The repo ships **one** optional, human-run enrichment utility ([`tools/Enrich-LenovoWarrantyToNotes.ps1`](./tools/Enrich-LenovoWarrantyToNotes.ps1)) that can write device **warranty** into the Notes field. It is fenced off, opt-in, defaults to a read-only report, and named openly rather than hidden. The agent never touches it.
 
-- Devices / Intune: `DeviceManagementManagedDevices.Read.All`, `DeviceManagementConfiguration.Read.All`
-- Directory / users / licences: `User.Read.All`, `Directory.Read.All`, `Organization.Read.All`, `Device.Read.All`
-- Sign-in & audit: `AuditLog.Read.All` (sign-in activity also requires **Entra ID P1/P2**)
-- Reporting: `Reports.Read.All` (Teams usage)
-- Storage (data plane): **Storage Blob Data Contributor** on the storage account (scoped to the container)
-- **Write (Lenovo update mode only):** `DeviceManagementManagedDevices.ReadWrite.All`
+---
 
-App-role grants are made with `New-MgServicePrincipalAppRoleAssignment` (no portal blade). Import
-`Az.Accounts` / `Az.Storage` into the Automation Account for Blob upload.
+## What's in here
 
-## Getting started
+| Path | What it is |
+|---|---|
+| [`scripts/`](./scripts/) | The read-only collectors (`Collect-*.ps1`) plus `New-SyntheticFleet.ps1` for generating a synthetic lab fleet. |
+| [`tools/`](./tools/) | The opt-in Lenovo warranty enrichment utility (the one honest write-exception). |
+| [`azure-ai-search/`](./azure-ai-search/) | Copy-paste index definitions (`fleet-structured`, `fleet-docs`), the agent's sanitized system prompt, and a README on creating the indexes. |
+| [`docs/`](./docs/) | Build-it-yourself walkthrough, Azure Automation setup, and per-collector notes. |
+| [`CREDITS.md`](./CREDITS.md) | Community tools and prior art this stands on (M365Documentation, SMSAgent). |
+| [`ROADMAP.md`](./ROADMAP.md) | What's shipped and what's next. |
+| [`LICENSE`](./LICENSE) | MIT. |
 
-1. Create an Azure Automation Account and enable its **system-assigned Managed Identity**.
-2. Grant the read-only Graph app roles above, and **Storage Blob Data Contributor** on your storage account.
-3. Import `Az.Accounts` and `Az.Storage`.
-4. Set the `CONFIG` block at the top of a script (resource group / storage account / container).
-5. Run it read-only against a **lab tenant** — or against `New-SyntheticFleet.ps1` output — and open the
-   CSV before wiring up Power BI.
+The collectors ship progressively — the [full ten-collector series](https://ketankamble.com/blog/) is written up on the site, and `ROADMAP.md` tracks which are in the repo.
 
-## Notes & caveats
+---
 
-- Beta Graph endpoints (`/beta/deviceManagement/...`, `enrollmentProfileName`, `$batch`) can change —
-  re-verify in your own tenant. Server-side `$filter` on `managedDevices` is inconsistent; several scripts
-  filter client-side on purpose.
-- `signInActivity` caps `$top` at 120 and needs Entra ID P1/P2. Teams usage reports return CSV with a
-  UTF-8 BOM and (by default) **pseudonymised** user names — disable report name concealment or the joins
-  fail. `businessPhones` is a directory attribute, not the authoritative Teams line.
-- Mail from the Automation sandbox can't use port 25 — send via Graph `sendMail`, an authenticated relay,
-  or Azure Communication Services.
+## Quick start
 
-## License
+1. **Stand up the collect layer** — follow [`docs/azure-automation-setup.md`](./docs/azure-automation-setup.md): a resource group, an Automation account with a system-assigned Managed Identity (no secrets), storage, and **read-only `.Read.All` Graph roles**.
+2. **Import the collectors** from [`scripts/`](./scripts/) as PowerShell 7.2 runbooks, dot-source `read-only-gate.ps1` at the top of each, publish, and schedule them. No live tenant? Generate one with `New-SyntheticFleet.ps1`.
+3. **Create the two search indexes** from [`azure-ai-search/`](./azure-ai-search/) and point indexers at the snapshots.
+4. **Create the Foundry agent** with Azure AI Search as its only tool and paste in the system prompt from [`azure-ai-search/agent-system-prompt.md`](./azure-ai-search/agent-system-prompt.md).
 
-MIT — see [LICENSE](LICENSE).
+The end-to-end walkthrough is in [`docs/build-it-yourself.md`](./docs/build-it-yourself.md) and the [capstone post](https://ketankamble.com/blog/the-read-only-ai-agent-that-cant-touch-your-tenant/).
 
-*Microsoft, Intune, Entra, Microsoft Graph, Azure, Power BI, Windows Autopilot and Azure Virtual Desktop
-are trademarks of the Microsoft group of companies; Lenovo is a trademark of Lenovo. Independent content;
-verify every endpoint and permission in your own lab tenant before relying on it.*
+---
+
+## Security notes
+
+- Everything runs read-only by construction; `read-only-gate.ps1` is the backstop for the day discipline slips.
+- Lock the Azure AI Search query key with RBAC; minimise personal fields at the collector.
+- All sample data in this repo is **synthetic** (`@contoso.com` / `contoso.onmicrosoft.com`). No real tenant, users, or devices.
+
+## License & credits
+
+- **MIT** — see [`LICENSE`](./LICENSE).
+- Built on community work — see [`CREDITS.md`](./CREDITS.md). Notably, the Intune Documentation collector uses **[M365Documentation](https://github.com/ThomasKur/M365Documentation)** by Thomas Kurth (GPL) as an **install-only** dependency (installed from the PowerShell Gallery, not vendored here), so this repo stays MIT.
+
+## Disclaimer
+
+Independent content — **not affiliated with, sponsored by, or endorsed by Microsoft.** Microsoft, Intune, Entra, Microsoft Graph, Azure and Power BI are trademarks of the Microsoft group of companies. Everything here comes from a personal lab; verify in your own tenant before relying on it.

@@ -1,0 +1,39 @@
+{
+  "name": "fleet-structured",
+  "description": "One document per report row from the read-only collector snapshots (inventory, compliance, apps, hygiene, autopilot, licences, AI-tool detections). This is the 'how many / which / where' half the agent retrieves and cites. Create it, then point an indexer at the CSV snapshots in Blob Storage. Sanitized example schema — adjust fields to your own reports.",
+  "fields": [
+    { "name": "id",           "type": "Edm.String",  "key": true,  "filterable": true,  "sortable": false, "facetable": false, "searchable": false },
+    { "name": "reportType",    "type": "Edm.String",  "filterable": true, "facetable": true,  "searchable": true },
+    { "name": "deviceName",    "type": "Edm.String",  "filterable": true, "facetable": false, "searchable": true },
+    { "name": "deviceId",      "type": "Edm.String",  "filterable": true, "facetable": false, "searchable": false },
+    { "name": "owner",         "type": "Edm.String",  "filterable": true, "facetable": false, "searchable": true },
+    { "name": "region",        "type": "Edm.String",  "filterable": true, "facetable": true,  "searchable": true },
+    { "name": "category",      "type": "Edm.String",  "filterable": true, "facetable": true,  "searchable": true },
+    { "name": "settingOrKey",  "type": "Edm.String",  "filterable": true, "facetable": true,  "searchable": true },
+    { "name": "value",         "type": "Edm.String",  "filterable": true, "facetable": false, "searchable": true },
+    { "name": "status",        "type": "Edm.String",  "filterable": true, "facetable": true,  "searchable": true },
+    { "name": "detail",        "type": "Edm.String",  "filterable": false,"facetable": false, "searchable": true },
+    { "name": "count",         "type": "Edm.Int32",   "filterable": true, "sortable": true,   "facetable": false, "searchable": false },
+    { "name": "snapshotDate",  "type": "Edm.DateTimeOffset", "filterable": true, "sortable": true, "facetable": false, "searchable": false }
+  ],
+  "semantic": {
+    "configurations": [
+      {
+        "name": "fleet-structured-semantic",
+        "prioritizedFields": {
+          "titleField": { "fieldName": "deviceName" },
+          "prioritizedContentFields": [
+            { "fieldName": "detail" },
+            { "fieldName": "value" }
+          ],
+          "prioritizedKeywordsFields": [
+            { "fieldName": "reportType" },
+            { "fieldName": "category" },
+            { "fieldName": "settingOrKey" },
+            { "fieldName": "status" }
+          ]
+        }
+      }
+    ]
+  }
+}
