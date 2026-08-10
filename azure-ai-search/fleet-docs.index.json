@@ -1,0 +1,58 @@
+{
+  "name": "fleet-docs",
+  "description": "The rendered Intune configuration documentation, chunked and vector-embedded (text-embedding-3-small, 1536 dims) with semantic ranking. This is the 'how is it configured / why' half the agent retrieves and cites. Sanitized example schema. Set the vectorizer's resourceUri/deploymentId to your own Azure OpenAI embedding deployment (or embed at indexing time and omit the vectorizer).",
+  "fields": [
+    { "name": "id",            "type": "Edm.String", "key": true,  "filterable": true,  "searchable": false },
+    { "name": "title",         "type": "Edm.String", "searchable": true, "filterable": true,  "sortable": false },
+    { "name": "content",       "type": "Edm.String", "searchable": true, "filterable": false },
+    { "name": "sourceReport",  "type": "Edm.String", "searchable": true, "filterable": true,  "facetable": true },
+    { "name": "snapshotDate",  "type": "Edm.DateTimeOffset", "filterable": true, "sortable": true },
+    {
+      "name": "contentVector",
+      "type": "Collection(Edm.Single)",
+      "searchable": true,
+      "retrievable": false,
+      "dimensions": 1536,
+      "vectorSearchProfile": "fleet-docs-hnsw-profile"
+    }
+  ],
+  "vectorSearch": {
+    "algorithms": [
+      {
+        "name": "fleet-docs-hnsw",
+        "kind": "hnsw",
+        "hnswParameters": { "m": 4, "efConstruction": 400, "efSearch": 500, "metric": "cosine" }
+      }
+    ],
+    "profiles": [
+      {
+        "name": "fleet-docs-hnsw-profile",
+        "algorithm": "fleet-docs-hnsw",
+        "vectorizer": "fleet-docs-openai"
+      }
+    ],
+    "vectorizers": [
+      {
+        "name": "fleet-docs-openai",
+        "kind": "azureOpenAI",
+        "azureOpenAIParameters": {
+          "resourceUri": "https://<your-aoai-resource>.openai.azure.com",
+          "deploymentId": "text-embedding-3-small",
+          "modelName": "text-embedding-3-small"
+        }
+      }
+    ]
+  },
+  "semantic": {
+    "configurations": [
+      {
+        "name": "fleet-docs-semantic",
+        "prioritizedFields": {
+          "titleField": { "fieldName": "title" },
+          "prioritizedContentFields": [ { "fieldName": "content" } ],
+          "prioritizedKeywordsFields": [ { "fieldName": "sourceReport" } ]
+        }
+      }
+    ]
+  }
+}
