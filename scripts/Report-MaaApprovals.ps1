@@ -33,11 +33,12 @@ $MailTo                = @('servicedesk@contoso.com')
 # --- Auth: Managed Identity token (no stored secret) -------------------------
 function Get-ManagedIdentityToken {
     param([string]$Resource = 'https://graph.microsoft.com/')
-    $url = $env:IDENTITY_ENDPOINT
-    if (-not $url) { throw "IDENTITY_ENDPOINT not set. Enable the system-assigned Managed Identity." }
+    $endpoint = $env:IDENTITY_ENDPOINT
+    if (-not $endpoint) { throw "IDENTITY_ENDPOINT not set. Enable the system-assigned Managed Identity." }
+    # Azure Automation / App Service MSI endpoint: GET with a mandatory api-version.
+    $uri = "{0}?resource={1}&api-version=2019-08-01" -f $endpoint, [uri]::EscapeDataString($Resource)
     $headers  = @{ 'X-IDENTITY-HEADER' = $env:IDENTITY_HEADER; 'Metadata' = 'True' }
-    $response = Invoke-RestMethod -Uri $url -Method POST -Headers $headers `
-        -ContentType 'application/x-www-form-urlencoded' -Body @{ resource = $Resource }
+    $response = Invoke-RestMethod -Uri $uri -Method GET -Headers $headers
     if (-not $response.access_token) { throw "Managed Identity returned an empty token." }
     return $response.access_token
 }
